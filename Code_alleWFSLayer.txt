@@ -26,6 +26,13 @@ export default function App() {
     'mobilegis:group5layer3': 'Linie 5',
     'mobilegis:group5layerstations_bereinigt': 'Stationen',
   };
+  const layerColors = {
+  'mobilegis:group5layer1_gesamt': '#e41a1c',
+  'mobilegis:group5layers2': '#377eb8',
+  'mobilegis:group5layer3': '#4daf4a',
+  'mobilegis:group5layerstations_bereinigt': '#984ea3',
+};
+
 
   // EPSG:25832 → WGS84 definieren
   proj4.defs("EPSG:25832", "+proj=utm +zone=32 +ellps=GRS80 +units=m +no_defs");
@@ -192,7 +199,10 @@ export default function App() {
           <Text style={styles.layerControlTitle}>Layer ein-/ausblenden</Text>
           {layerList.map((layerName) => (
             <View key={layerName} style={styles.layerSwitch}>
-              <Text style={styles.layerLabel}>{layerDisplayNames[layerName]}</Text>
+              <Text style={[styles.layerLabel, { color: layerColors[layerName] || 'black' }]}>
+                  {layerDisplayNames[layerName]}
+              </Text>
+
               <Switch
                 value={visibleLayers[layerName]}
                 onValueChange={() => toggleLayerVisibility(layerName)}
