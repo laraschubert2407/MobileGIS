@@ -1,0 +1,293 @@
+// This code is a React Native application that displays a map with various layers from a GeoServer.
+// To run this code, you need to have the necessary dependencies installed, such as 'react-native', `react-native-maps`, `expo-location`, and `proj4`.
+// It fetches the user's current location and overlays different layers on the map, allowing users to toggle their visibility.
+// The layers include lines and stations, and the app uses the proj4 library to convert coordinates from EPSG:25832 to WGS84.
+
+import { useEffect, useState } from 'react';
+import { SafeAreaView, StyleSheet, View, ActivityIndicator, Text, ScrollView, Switch, Image } from 'react-native';
+import MapView, { Marker, UrlTile, Polygon, Polyline } from 'react-native-maps';
+import * as Location from 'expo-location';
+import proj4 from 'proj4';
+import stationIcon from './assets/Haltestelle_Icon.png'; // Ensure you have a station icon in your assets
+
+export default function App() {
+  // State-Variablen für Standort, Fehler, Layer und Visualisierung
+  const [location, setLocation] = useState(null);
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [allFeatures, setAllFeatures] = useState({});
+  const [visibleLayers, setVisibleLayers] = useState({
+    // 'mobilegis:group5layer1': true,
+     'mobilegis:group5layer1_gesamt': true,
+     'mobilegis:group5layers2': true,
+     'mobilegis:group5layer3': true,
+    'mobilegis:group5layerstations_bereinigt': true,
+  });
+  const layerDisplayNames = {
+     'mobilegis:group5layer1_gesamt': 'Linie 1',
+     'mobilegis:group5layers2': 'Linie S2',
+     'mobilegis:group5layer3': 'Linie 5',
+    'mobilegis:group5layerstations_bereinigt': 'Stationen',
+  };
+  const layerColors = {
+   'mobilegis:group5layer1_gesamt': '#e41a1c',
+  'mobilegis:group5layers2': '#377eb8',
+  'mobilegis:group5layer3': '#4daf4a',
+  'mobilegis:group5layerstations_bereinigt': '#984ea3',
+};
+
+
+  // EPSG:25832 → WGS84 definieren, Umrechnung zur Anzeige auf der Karte
+  proj4.defs("EPSG:25832", "+proj=utm +zone=32 +ellps=GRS80 +units=m +no_defs");
+  const toWGS84 = (coord) => {
+    const [lon, lat] = proj4("EPSG:25832", "WGS84", coord);
+    return { latitude: lat, longitude: lon };
+  };
+
+  const layerList = Object.keys(visibleLayers);
+
+  // Standort holen
+  useEffect(() => {
+    (async () => {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        setErrorMsg('Zugriff auf den Standort wurde verweigert.');
+        return;
+      }
+
+      let currentLocation = await Location.getCurrentPositionAsync({});
+      setLocation({
+        latitude: currentLocation.coords.latitude,
+        longitude: currentLocation.coords.longitude,
+      });
+    })();
+  }, []);
+
+  // GeoJSON aller Layer laden
+  useEffect(() => {
+    const fetchAllLayers = async () => {
+      try {
+        const responses = await Promise.all(
+          layerList.map((layer) =>
+            fetch(
+              `https://mobilegisserver.mywire.org:8443/geoserver/mobilegis/ows?service=WFS&version=1.0.0&request=GetFeature&typeName=${layer}&outputFormat=application/json`
+            ).then((res) => res.json())
+          )
+        );
+
+        const featuresPerLayer = {};
+        layerList.forEach((layerName, index) => {
+          featuresPerLayer[layerName] = responses[index].features || [];
+        });
+
+        setAllFeatures(featuresPerLayer);
+      } catch (error) {
+        console.error("Fehler beim Laden der GeoJSON-Layer:", error);
+      }
+    };
+
+    fetchAllLayers();
+  }, []);
+
+  // Layer-Sichtbarkeit umschalten (momentan unnötig, da alle Layer standardmäßig sichtbar sind)
+  const toggleLayerVisibility = (layerName) => {
+    setVisibleLayers((prev) => ({
+      ...prev,
+      [layerName]: !prev[layerName],
+    }));
+  }; 
+
+  // Fehler anzeigen, wenn Standort nicht geladen werden konnte
+  if (errorMsg) {
+    return (
+      <View style={styles.loadingContainer}>
+        <Text style={styles.errorText}>{errorMsg}</Text>
+      </View>
+    );
+  }
+
+  // Warten, bis Standort geladen ist
+  // Wenn Standort noch nicht geladen ist, Lade-Spinner anzeigen
+  if (!location) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" />
+        <Text>Standort wird geladen…</Text>
+      </View>
+    );
+  }
+
+  // Wenn Standort und Layer geladen sind, Karte rendern mit allen Layern  
+  return (
+    <SafeAreaView style={styles.SafeArea}>
+      <View style={styles.container}>
+        <MapView // Karte mit initialer Region basierend auf dem Standort
+          style={styles.map} 
+          initialRegion={{
+            latitude: location.latitude,
+            longitude: location.longitude,
+            latitudeDelta: 0.01,
+            longitudeDelta: 0.01,
+          }}
+        >
+          <UrlTile // Hintergrundkarte von CartoDB, simples Karten-Design
+            urlTemplate="https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
+            maximumZ={19}
+            tileSize={256}
+            minimumZ={0}
+            zIndex={0}
+          />
+
+          <Marker coordinate={location} title="Mein Standort" />
+
+          {/* Features aller sichtbaren Layer anzeigen */}
+          {layerList.map((layerName, layerIndex) => {
+            if (!visibleLayers[layerName]) return null;
+
+            const features = allFeatures[layerName] || [];
+            const color = ['#e41a1c', '#377eb8', '#4daf4a', '#984ea3', '#ff7f00'][layerIndex % 5];
+
+            return features.map((feature, featureIndex) => {
+              const geometry = feature.geometry;
+              if (!geometry || !geometry.coordinates) return null;
+
+              const key = `${layerName}-${featureIndex}`;
+
+              // Verschiedene Geometrietypen behandeln, um verschiedene Features darzustellen
+              if (geometry.type === "Point") {
+                return (
+                  <Marker
+                    key={key}
+                    coordinate={toWGS84(geometry.coordinates)}
+                    title={feature.properties?.name || key}
+                  />
+                );
+              }
+
+              if (geometry.type === "MultiPoint") {
+                return geometry.coordinates.map((pointCoords, subIndex) => (
+                  <Marker
+                    key={`${key}-mp-${subIndex}`}
+                    coordinate={toWGS84(pointCoords)}
+                    title={feature.properties?.name || `${key}-${subIndex}`}
+                  >
+                    <Image 
+                    source={stationIcon} 
+                    style={{ width: 16, height: 16, resizeMode: 'contain' }} />
+                  </Marker>
+                ));
+              }
+
+              if (geometry.type === "LineString") {
+                return (
+                  <Polyline
+                    key={key}
+                    coordinates={geometry.coordinates.map(toWGS84)}
+                    strokeColor={color}
+                    strokeWidth={3}
+                  />
+                );
+              }
+
+              if (geometry.type === "MultiLineString") {
+                return geometry.coordinates.map((lineCoords, subIndex) => (
+                  <Polyline
+                    key={`${key}-${subIndex}`}
+                    coordinates={lineCoords.map(toWGS84)}
+                    strokeColor={color}
+                    strokeWidth={3}
+                  />
+                ));
+              }
+
+              if (geometry.type === "Polygon") {
+                return (
+                  <Polygon
+                    key={key}
+                    coordinates={geometry.coordinates[0].map(toWGS84)}
+                    strokeColor={color}
+                    fillColor="rgba(0,0,255,0.3)"
+                    strokeWidth={2}
+                  />
+                );
+              }
+
+              return null;
+            });
+          })}
+        </MapView>
+
+        {/* Layer-Legende */}
+        <ScrollView style={styles.layerControl}>
+          <Text style={styles.layerControlTitle}>Legende</Text>
+          {layerList.map((layerName) => (
+            <View key={layerName} style={styles.layerItem}>
+              <View style={styles.colorLabel}>
+                <Text style={styles.layerLabel}>{layerDisplayNames[layerName]}</Text>
+                <View
+                 style= {{
+                  width: 12,
+                  height: 12,
+                  backgroundColor: layerColors[layerName] || '#000',
+                  marginLeft: 6,
+                  borderRadius: 3,
+                }}
+              />
+              </View>
+            </View>
+          ))}
+        </ScrollView>
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  SafeArea: {
+    flex: 1,
+    backgroundColor: 'white',
+  },
+  container: {
+    flex: 1,
+  },
+  map: {
+    flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  errorText: {
+    fontSize: 16,
+    color: 'red',
+    textAlign: 'center',
+    paddingHorizontal: 20,
+  },
+  layerControl: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    backgroundColor: '#ffffffcc',
+    padding: 10,
+    borderRadius: 12,
+    maxHeight: 220,
+    width: 130,
+  },
+  layerControlTitle: {
+    fontWeight: 'bold',
+    fontSize: 16,
+    marginBottom: 6,
+  },
+  layerItem: {
+    paddingVertical: 3,
+  },
+  colorLabel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start'
+  },
+  layerLabel: {
+    fontSize: 14,
+    flexShrink: 1,
+  },
+});
