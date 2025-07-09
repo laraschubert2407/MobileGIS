@@ -1,0 +1,76 @@
+// components/ReportIssueModal.js
+import React from 'react';
+import { Modal, View, Text, TouchableOpacity, StyleSheet } from 'react-native';
+
+export default function ReportIssueModal({ visible, onClose, stationName }) {
+  return (
+    <Modal
+      animationType="slide"
+      transparent
+      visible={visible}
+      onRequestClose={onClose}
+    >
+      <View style={styles.overlay}>
+        <View style={styles.modalContainer}>
+          <Text style={styles.title}>Störung melden</Text>
+          <Text style={styles.subtitle}>Station: {stationName}</Text>
+
+          <TouchableOpacity style={styles.button} onPress={() => {
+            // Hier könntest du eine API oder Mail-Verlinkung einbauen
+            alert(`Störung für "${stationName}" gemeldet!`);
+            onClose();
+          }}>
+            <Text style={styles.buttonText}>Störung melden</Text>
+          </TouchableOpacity>
+
+          <TouchableOpacity onPress={onClose} style={styles.closeButton}>
+            <Text style={styles.closeText}>Abbrechen</Text>
+          </TouchableOpacity>
+        </View>
+      </View>
+    </Modal>
+  );
+}
+
+const styles = StyleSheet.create({
+  overlay: {
+    flex: 1,
+    backgroundColor: '#000000aa',
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  modalContainer: {
+    backgroundColor: 'white',
+    padding: 20,
+    borderRadius: 12,
+    width: '80%',
+    alignItems: 'center',
+  },
+  title: {
+    fontSize: 18,
+    fontWeight: 'bold',
+    marginBottom: 10,
+  },
+  subtitle: {
+    fontSize: 16,
+    marginBottom: 20,
+  },
+  button: {
+    backgroundColor: '#e41a1c',
+    padding: 12,
+    borderRadius: 8,
+    marginBottom: 10,
+    width: '100%',
+  },
+  buttonText: {
+    color: 'white',
+    textAlign: 'center',
+    fontWeight: 'bold',
+  },
+  closeButton: {
+    padding: 8,
+  },
+  closeText: {
+    color: '#333',
+  },
+});
