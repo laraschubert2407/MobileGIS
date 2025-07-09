@@ -1,0 +1,341 @@
+import { useEffect, useState } from 'react';
+import { SafeAreaView, StyleSheet, View, ActivityIndicator, Text, ScrollView, Image } from 'react-native';
+import MapView, { Marker, UrlTile, Polygon, Polyline } from 'react-native-maps';
+import * as Location from 'expo-location';
+import proj4 from 'proj4';
+import stationIcon from './assets/Haltestelle_Icon.png';
+import ReportIssueModal from './components/ReportIssueModal';
+
+// Definiere unterstützte CRS
+proj4.defs('EPSG:25832', '+proj=utm +zone=32 +ellps=GRS80 +units=m +no_defs');
+proj4.defs('EPSG:3857', '+proj=merc +a=6378137 +b=6378137 +lat_ts=0 +lon_0=0 +x_0=0 +y_0=0 +k=1 +units=m +no_defs');
+
+// Hilfsfunktion zur Koordinatenumwandlung
+const toMapCoords = (coord, sourceCRS = 'EPSG:4326') => {
+  if (sourceCRS === 'EPSG:4326') {
+    const [lon, lat] = coord;
+    return { latitude: lat, longitude: lon };
+  }
+  const [lon, lat] = proj4(sourceCRS, 'EPSG:4326', coord);
+  return { latitude: lat, longitude: lon };
+};
+
+// CRS-Name vereinheitlichen, z. B. aus "urn:ogc:def:crs:EPSG::4326"
+const normalizeCRS = (rawCRS) => {
+  if (!rawCRS) return 'EPSG:3857';
+  const match = rawCRS.match(/EPSG(?::)?[:]?(\d+)/);
+  return match ? `EPSG:${match[1]}` : 'EPSG:3857';
+};
+
+export default function App() {
+  const [location, setLocation] = useState(null);
+  const [errorMsg, setErrorMsg] = useState(null);
+  const [allFeatures, setAllFeatures] = useState({});
+  const [selectedStation, setSelectedStation] = useState(null);
+  const [isModalVisible, setIsModalVisible] = useState(false);
+
+  const [visibleLayers, setVisibleLayers] = useState({
+    'mobilegis:group5linie1_dur_hei_zusammen': true,
+    'mobilegis:group5linie1_hei_dur_zusammen': true,
+    'mobilegis:group5linie3_rhein_rint_zusammen': true,
+    'mobilegis:group5linie3_rint_rhein_zusammen': true,
+    'mobilegis:group5linie5_dur_rhein_zusammen': true,
+    'mobilegis:group5linie5_rhein_dur_zusammen': true,
+    'mobilegis:group5linies2_reit_rheinste_zusammen': true,
+    'mobilegis:group5linies2_rheinste_reit_zusammen': true,
+    'mobilegis:group5all_stations_alle_linien': true,
+  });
+
+  const layerDisplayNames = {
+    'mobilegis:group5linie1_dur_hei_zusammen': "1 - Nach Heide",
+    'mobilegis:group5linie1_hei_dur_zusammen': "1 - Nach Durlach",
+    'mobilegis:group5linie3_rhein_rint_zusammen': "3 - Nach Rintheim",
+    'mobilegis:group5linie3_rint_rhein_zusammen': "3 - Nach Rheinbergstraße",
+    'mobilegis:group5linie5_dur_rhein_zusammen': "5 - Nach Rheinhafen",
+    'mobilegis:group5linie5_rhein_dur_zusammen': "5 - Nach Durlach",
+    'mobilegis:group5linies2_reit_rheinste_zusammen': "S2 - Nach Rheinstetten",
+    'mobilegis:group5linies2_rheinste_reit_zusammen': "S2 - Nach Reitschulschlag",
+    'mobilegis:group5all_stations_alle_linien': "Stationen",
+  };
+
+  const layerColors = {
+    'mobilegis:group5linie1_dur_hei_zusammen': '#e41a1c',
+    'mobilegis:group5linie1_hei_dur_zusammen': '#e41a1c',
+    'mobilegis:group5linie3_rhein_rint_zusammen': '#377eb8',
+    'mobilegis:group5linie3_rint_rhein_zusammen': '#377eb8',
+    'mobilegis:group5linie5_dur_rhein_zusammen': '#4daf4a',
+    'mobilegis:group5linie5_rhein_dur_zusammen': '#4daf4a',
+    'mobilegis:group5linies2_reit_rheinste_zusammen': '#984ea3',
+    'mobilegis:group5linies2_rheinste_reit_zusammen': '#984ea3',
+    'mobilegis:group5all_stations_alle_linien': '#377eb8',
+  };
+
+  const layerList = Object.keys(visibleLayers);
+
+  useEffect(() => {
+    (async () => {
+      let { status } = await Location.requestForegroundPermissionsAsync();
+      if (status !== 'granted') {
+        setErrorMsg('Zugriff auf den Standort wurde verweigert.');
+        return;
+      }
+
+      let currentLocation = await Location.getCurrentPositionAsync({});
+      setLocation({
+        latitude: currentLocation.coords.latitude,
+        longitude: currentLocation.coords.longitude,
+      });
+    })();
+  }, []);
+
+  const handleStationPress = (stationName) => {
+    setSelectedStation(stationName);
+    setIsModalVisible(true);
+  };
+
+  const convertFeatureCoords = (feature, crs) => {
+    const g = feature.geometry;
+    if (!g?.coordinates) return feature;
+
+    const conv = (c) => toMapCoords(c, crs);
+
+    switch (g.type) {
+      case 'Point':
+        g.coordinates = conv(g.coordinates);
+        break;
+      case 'MultiPoint':
+      case 'LineString':
+        g.coordinates = g.coordinates.map(conv);
+        break;
+      case 'MultiLineString':
+      case 'Polygon':
+        g.coordinates = g.coordinates.map((ring) => ring.map(conv));
+        break;
+    }
+    return feature;
+  };
+
+  useEffect(() => {
+    const fetchAllLayers = async () => {
+      try {
+        const responses = await Promise.all(
+          layerList.map((layer) =>
+            fetch(
+              `https://mobilegisserver.mywire.org:8443/geoserver/mobilegis/ows?service=WFS&version=2.0.0&request=GetFeature&typeName=${layer}&outputFormat=application/json`
+            ).then((res) => res.json())
+          )
+        );
+
+        const featuresPerLayer = {};
+        layerList.forEach((layerName, idx) => {
+          const geojson = responses[idx];
+          const crsRaw = geojson.crs?.properties?.name || 'EPSG:3857';
+          const crsName = normalizeCRS(crsRaw);
+
+          featuresPerLayer[layerName] = geojson.features.map((f) =>
+            convertFeatureCoords(f, crsName)
+          );
+        });
+
+        setAllFeatures(featuresPerLayer);
+      } catch (error) {
+        console.error("Fehler beim Laden der GeoJSON-Layer:", error);
+      }
+    };
+
+    fetchAllLayers();
+  }, []);
+
+  if (errorMsg) {
+    return (
+      <View style={styles.loadingContainer}>
+        <Text style={styles.errorText}>{errorMsg}</Text>
+      </View>
+    );
+  }
+
+  if (!location) {
+    return (
+      <View style={styles.loadingContainer}>
+        <ActivityIndicator size="large" />
+        <Text>Standort wird geladen…</Text>
+      </View>
+    );
+  }
+
+  return (
+    <SafeAreaView style={styles.SafeArea}>
+      <View style={styles.container}>
+        <MapView
+          style={styles.map}
+          initialRegion={{
+            latitude: location.latitude,
+            longitude: location.longitude,
+            latitudeDelta: 0.01,
+            longitudeDelta: 0.01,
+          }}
+        >
+          <UrlTile
+            urlTemplate="https://a.basemaps.cartocdn.com/light_nolabels/{z}/{x}/{y}{r}.png"
+            maximumZ={19}
+            tileSize={256}
+            minimumZ={0}
+            zIndex={0}
+          />
+
+          <Marker coordinate={location} title="Mein Standort" />
+
+          {layerList.map((layerName, layerIndex) => {
+            if (!visibleLayers[layerName]) return null;
+
+            const features = allFeatures[layerName] || [];
+            const color = layerColors[layerName] || '#000';
+
+            return features.map((feature, featureIndex) => {
+              const geometry = feature.geometry;
+              if (!geometry || !geometry.coordinates) return null;
+
+              const key = `${layerName}-${featureIndex}`;
+
+              if (geometry.type === "Point") {
+                return (
+                  <Marker
+                    key={key}
+                    coordinate={geometry.coordinates}
+                    title={feature.properties?.name || key}
+                  />
+                );
+              }
+
+              if (geometry.type === "MultiPoint") {
+                return geometry.coordinates.map((pointCoords, subIndex) => (
+                  <Marker
+                    key={`${key}-mp-${subIndex}`}
+                    coordinate={pointCoords}
+                    title={feature.properties?.name || `${key}-${subIndex}`}
+                    onPress={() => handleStationPress(feature.properties?.name || 'Unbenannte Station')}
+                  >
+                    <Image source={stationIcon} style={{ width: 16, height: 16, resizeMode: 'contain' }} />
+                  </Marker>
+                ));
+              }
+
+              if (geometry.type === "LineString") {
+                return (
+                  <Polyline
+                    key={key}
+                    coordinates={geometry.coordinates}
+                    strokeColor={color}
+                    strokeWidth={3}
+                  />
+                );
+              }
+
+              if (geometry.type === "MultiLineString") {
+                return geometry.coordinates.map((lineCoords, subIndex) => (
+                  <Polyline
+                    key={`${key}-${subIndex}`}
+                    coordinates={lineCoords}
+                    strokeColor={color}
+                    strokeWidth={3}
+                  />
+                ));
+              }
+
+              if (geometry.type === "Polygon") {
+                return (
+                  <Polygon
+                    key={key}
+                    coordinates={geometry.coordinates[0]}
+                    strokeColor={color}
+                    fillColor="rgba(0,0,255,0.3)"
+                    strokeWidth={2}
+                  />
+                );
+              }
+
+              return null;
+            });
+          })}
+        </MapView>
+
+        <ScrollView style={styles.layerControl}>
+          <Text style={styles.layerControlTitle}>Legende</Text>
+          {layerList.map((layerName) => (
+            <View key={layerName} style={styles.layerItem}>
+              <View style={styles.colorLabel}>
+                <Text style={styles.layerLabel}>{layerDisplayNames[layerName]}</Text>
+                <View
+                  style={{
+                    width: 12,
+                    height: 12,
+                    backgroundColor: layerColors[layerName] || '#000',
+                    marginLeft: 6,
+                    borderRadius: 3,
+                  }}
+                />
+              </View>
+            </View>
+          ))}
+        </ScrollView>
+
+        <ReportIssueModal
+          visible={isModalVisible}
+          onClose={() => setIsModalVisible(false)}
+          stationName={selectedStation}
+        />
+      </View>
+    </SafeAreaView>
+  );
+}
+
+const styles = StyleSheet.create({
+  SafeArea: {
+    flex: 1,
+    backgroundColor: 'white',
+  },
+  container: {
+    flex: 1,
+  },
+  map: {
+    flex: 1,
+  },
+  loadingContainer: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  errorText: {
+    fontSize: 16,
+    color: 'red',
+    textAlign: 'center',
+    paddingHorizontal: 20,
+  },
+  layerControl: {
+    position: 'absolute',
+    top: 10,
+    left: 10,
+    backgroundColor: '#ffffffcc',
+    padding: 10,
+    borderRadius: 12,
+    maxHeight: 220,
+    width: 130,
+  },
+  layerControlTitle: {
+    fontWeight: 'bold',
+    fontSize: 16,
+    marginBottom: 6,
+  },
+  layerItem: {
+    paddingVertical: 3,
+  },
+  colorLabel: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'flex-start',
+  },
+  layerLabel: {
+    fontSize: 14,
+    flexShrink: 1,
+  },
+});
